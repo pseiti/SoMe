@@ -1,0 +1,165 @@
+
+CMS_fx <- function ( par , nIter , empVec ) {
+  
+  t_start <- Sys.time()
+  
+  w_fc <- par [ 1 ]
+  gamma_fc <- par [ 2 ]
+  beta <- par [ 3 ]
+  w_cf <- par [ 4 ]
+  gamma_cf <- par [ 5 ]
+  epsilon <- par [ 6 ]
+  s_sec <- par [ 7 ]
+  
+  CRP_df <- NULL 
+  time_df <- NULL
+  
+  for ( iter in 1 : nIter ) {
+    
+    sampledStim <- sample ( 12 , 1 )
+    
+    ## Building up matrices
+    
+    Mfc_pre <- MFC_list [[ sampledStim ]]
+    Mcf_pre <- MCF_list [[ sampledStim ]]
+    nF <- nrow ( Mcf_pre )
+    Mfc_exp <- matrix ( rep ( 0 , nF^2 ) , nrow = nF )
+    Mcf_exp <- matrix ( rep ( 0 , nF^2 ) , nrow = nF )
+    M_I <- matrix ( rep ( 0 , nF^2 ) , nrow = nF )
+    diag ( M_I ) <- 1
+    
+    items <- matrix ( rep ( 0 , nF ^ 2 ) , nF )
+    diag ( items ) <- 1
+    
+    iter_df <- NULL
+    
+    cumN <- 0
+    
+    ci <- rep ( 0 , nF )
+    notRetrieved <- 2 : nF
+    
+    ## initializing context representation ci
+    
+    initID <- sample ( nF , 1 )
+    curItem <- initID
+    notRetrieved <- notRetrieved [ - which ( notRetrieved == curItem ) ]
+    iItem <- items [ curItem , ]
+    
+    start_search <- Sys.time()
+    
+    cIN_pre <-  c ( ( M_I + w_fc * Mfc_pre ) %*% iItem )
+    cIN_exp <- c ( Mfc_exp %*% iItem )
+    cIN <- gamma_fc * cIN_pre + ( 1 - gamma_fc ) * cIN_exp
+    cIN <- cIN / sqrt ( sum ( cIN ^ 2 ) )
+    rho_i <- sqrt ( 1 + beta ^ 2 * ( ( ci %*% cIN ) ^ 2 - 1 ) ) - beta * ( ci %*% cIN )
+    ci_last <- ci
+    ci <- rho_i * ci + beta * cIN
+    
+    ## searching memory
+    
+    s <- 1 
+    while ( s <= s_max ) { 
+      
+      if ( s == 1 ) { 
+        itemID <- 1 
+      } else { itemID <- curItem }
+      
+      iItem <- items [ itemID , ]
+      
+      # context retrieval and update
+      cIN_pre <-  c ( ( M_I + w_fc * Mfc_pre ) %*% iItem )
+      cIN_exp <- c ( Mfc_exp %*% iItem )
+      cIN <- gamma_fc * cIN_pre + ( 1 - gamma_fc ) * cIN_exp
+      cIN <- cIN / sqrt ( sum ( cIN ^ 2 ) )
+      
+      rho_i <- sqrt ( 1 + beta ^ 2 * ( ( ci %*% cIN ) ^ 2 - 1 ) ) - beta * ( ci %*% cIN )
+      ci_last <- ci
+      ci <- rho_i * ci + beta * cIN
+      
+      # search for new item
+      fIN_pre <-  c ( ( 0 + w_cf * Mcf_pre ) %*% ci ) # 0 insted of identity matrix; otherwise, almost no chance to move away from current item
+      fIN_exp <- c ( Mcf_exp %*% iItem )
+      I <- gamma_cf * fIN_pre + ( 1 - gamma_cf ) * fIN_exp
+      
+      err <- rnorm ( nF , 0 , epsilon )
+      a <- I + err
+      curItem <- which.max ( a )
+      
+      if ( is.element ( curItem , notRetrieved ) == TRUE ) { 
+        notRetrieved <- notRetrieved [ - which ( notRetrieved == curItem) ]
+        cumN <- cumN + 1
+        iter_df <- rbind ( iter_df , data.frame ( s , curItem , cumN ) )
+        if ( cumN == N_max) { break }
+      }
+      
+      # learning
+      dMfc <- ci_last %o% iItem  
+      Mfc_exp <- Mfc_exp + dMfc
+      dMcf <- iItem %o% ci_last  
+      Mcf_exp <- Mcf_exp + dMcf
+      
+      s <- s + 1
+      
+    }
+    
+    iter_assos <- iter_df[ , "curItem" ]
+    if ( length ( iter_assos ) > 2 ) {
+      
+      lag_fx <- function(j){
+        start <- iter_assos [ j ]
+        preceding <- iter_assos [ ( j - 1 ) : 1 ]
+        Mcf_pre [ start , preceding ] [ 1 : nLag ]
+      }
+      lag_mat <- t ( sapply ( c ( length ( iter_assos ) : 2 ) , lag_fx ) )
+      lag_sims <- colMeans ( lag_mat , na.rm = T ) [ 1 : nLag ]
+      
+      iter_times <- iter_df [ , "s" ] [ 1 : nPos ]
+      iter_times <- iter_times * s_sec
+      
+    } else { 
+      
+      lag_sims <- rep ( NA , nLag ) 
+      iter_times <- rep ( NA , nPos )
+      
+    }
+      
+    lagNames <- 1 : nLag 
+    Positions <- 1 : nPos
+    names ( lag_sims ) <- lagNames
+    CRP_df <- rbind ( CRP_df , data.frame ( lagNames , lag_sims ) )
+    time_df <- rbind ( time_df , data.frame ( Positions , iter_times ) )
+    
+  }
+  
+  lag_means_sim <- summaryBy ( lag_sims ~ lagNames * group_x , data = CRP_df , 
+                               FUN = function ( x ) ( c ( mean ( x , na.rm = T ) , sd ( x , na.rm = T ) ) ) 
+  )
+  lag_means_sim <- lag_means_sim [ , 2 ]
+  RT_sim <- summaryBy ( iter_times ~ Positions , data = time_df , FUN = function ( x ) ( mean ( x , na.rm = T ) ) )
+  RT_sim <- RT_sim [ , 2 ]
+  
+  sim_vec <- c ( lag_means_sim , RT_sim )
+  
+  misfit_overall <- sqrt ( mean ( ( empVec - sim_vec ) ^ 2 , na.rm = T ) )
+  
+  run_res <- data.frame ( t_start - Sys.time ( )  ,  par [ 1 ] , par [ 2 ] , par [ 3 ] , par [ 4 ] ,
+                          par [ 5 ] , par [ 6 ] , par [ 7 ] , misfit_overall )
+  names ( run_res ) <- c ( "run_time" , "w_fc" , "gamma_fc" , "beta" , "w_cf" , "gamma_cf" , "epsilon" , "s_sec" , "fitness" )
+  # par(mfrow=c(2,1))
+  # 
+  # plot( LSG_M_emp , ylim = c ( .1 , .5 ) , type = "o" , ann=F,
+  #       cex = 0.8 , xaxt = "n" , pch = 16 , cex.axis = 0.8 , cex.lab = 0.8 )
+  # points( lag_means_sim , ylim = c ( .1 , .5 ) , type = "o" , cex = 0.8 , pch = 1 , lty = 2 )
+  
+  # plot ( RT_M_emp / 100 , ylim = c ( 0 , .6 ) , type = "p" , ylab = "N" , ann=F,
+  #        cex = 0.8 , xaxt = "n" , pch = 16 , cex.axis = 0.8 , cex.lab = 0.8 )
+  # points( RT_sim , ylim = c ( .1 , .5 ) , type = "o" , cex = 0.8 , pch = 1 , lty = 2 )
+  
+  print ( run_res )
+  
+  sim_vec
+  
+}
+
+# par <- c ( 0 , 1 , .9 , 1.3 , .5 , 0.15 , 0.05 ) # a good approximation
+# CMS_fx ( par )
